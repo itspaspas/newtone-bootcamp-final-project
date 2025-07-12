@@ -35,7 +35,8 @@ class MarketEnvironment():
                 lqd_time = LIQUIDATION_TIME,
                 num_tr = NUM_N,
                 lambd = LLAMBDA,
-                use_custom_reward = False):
+                use_custom_reward = False,
+                sparse_reward = False):
         
         # Set the random seed
         random.seed(randomSeed)
@@ -78,14 +79,15 @@ class MarketEnvironment():
         self.k = 0
 
         self.use_custom_reward = use_custom_reward  # default to AC utility reward
+        self.sparse_reward = sparse_reward
 
         
         
-    def reset(self, seed=0, liquid_time=LIQUIDATION_TIME, num_trades=NUM_N, lamb=LLAMBDA, use_custom_reward=False):
+    def reset(self, seed=0, liquid_time=LIQUIDATION_TIME, num_trades=NUM_N, lamb=LLAMBDA, use_custom_reward=False, sparse_reward=False):
             
 
         # Reinitialize environment
-        self.__init__(randomSeed = seed, lqd_time = liquid_time, num_tr = num_trades, lambd = lamb, use_custom_reward=use_custom_reward)
+        self.__init__(randomSeed = seed, lqd_time = liquid_time, num_tr = num_trades, lambd = lamb, use_custom_reward=use_custom_reward, sparse_reward=sparse_reward)
         
         # Set the initial state to [0,0,0,0,0,0,1,1]
         self.initial_state = np.array(list(self.logReturns) + [self.timeHorizon / self.num_n, \
@@ -191,13 +193,16 @@ class MarketEnvironment():
             self.prevImpactedPrice = info.price - info.currentPermanentImpact
             
             # Calculate the reward
-            if self.use_custom_reward:
-                shortfall = self.total_shares * self.startingPrice - self.totalCapture
-                reward = - shortfall / self.total_shares
+            if self.sparse_reward and not info.done:
+                reward = 0.0
             else:
-                currentUtility = self.compute_AC_utility(self.shares_remaining)
-                reward = (abs(self.prevUtility) - abs(currentUtility)) / abs(self.prevUtility)
-                self.prevUtility = currentUtility
+                if self.use_custom_reward:
+                    shortfall = self.total_shares * self.startingPrice - self.totalCapture
+                    reward = - shortfall / self.total_shares
+                else:
+                    currentUtility = self.compute_AC_utility(self.shares_remaining)
+                    reward = (abs(self.prevUtility) - abs(currentUtility)) / abs(self.prevUtility)
+                    self.prevUtility = currentUtility
 
 
 
