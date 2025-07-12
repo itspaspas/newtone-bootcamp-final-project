@@ -32,9 +32,10 @@ GAMMA = BID_ASK_SP / (0.1 * DAILY_TRADE_VOL)                         # Permanent
 class MarketEnvironment():
     
     def __init__(self, randomSeed = 0,
-                 lqd_time = LIQUIDATION_TIME,
-                 num_tr = NUM_N,
-                 lambd = LLAMBDA):
+                lqd_time = LIQUIDATION_TIME,
+                num_tr = NUM_N,
+                lambd = LLAMBDA,
+                use_custom_reward = False):
         
         # Set the random seed
         random.seed(randomSeed)
@@ -75,12 +76,16 @@ class MarketEnvironment():
         
         # Set a variable to keep trak of the trade number
         self.k = 0
+
+        self.use_custom_reward = use_custom_reward  # default to AC utility reward
+
         
         
-    def reset(self, seed = 0, liquid_time = LIQUIDATION_TIME, num_trades = NUM_N, lamb = LLAMBDA):
-        
-        # Initialize the environment with the given parameters
-        self.__init__(randomSeed = seed, lqd_time = liquid_time, num_tr = num_trades, lambd = lamb)
+    def reset(self, seed=0, liquid_time=LIQUIDATION_TIME, num_trades=NUM_N, lamb=LLAMBDA, use_custom_reward=False):
+            
+
+        # Reinitialize environment
+        self.__init__(randomSeed = seed, lqd_time = liquid_time, num_tr = num_trades, lambd = lamb, use_custom_reward=use_custom_reward)
         
         # Set the initial state to [0,0,0,0,0,0,1,1]
         self.initial_state = np.array(list(self.logReturns) + [self.timeHorizon / self.num_n, \
@@ -186,9 +191,16 @@ class MarketEnvironment():
             self.prevImpactedPrice = info.price - info.currentPermanentImpact
             
             # Calculate the reward
-            currentUtility = self.compute_AC_utility(self.shares_remaining)
-            reward = (abs(self.prevUtility) - abs(currentUtility)) / abs(self.prevUtility)
-            self.prevUtility = currentUtility
+            if self.use_custom_reward:
+                shortfall = self.total_shares * self.startingPrice - self.totalCapture
+                reward = - shortfall / self.total_shares
+            else:
+                currentUtility = self.compute_AC_utility(self.shares_remaining)
+                reward = (abs(self.prevUtility) - abs(currentUtility)) / abs(self.prevUtility)
+                self.prevUtility = currentUtility
+
+
+
             
             # If all the shares have been sold calculate E, V, and U, and give a positive reward.
             if self.shares_remaining <= 0:
