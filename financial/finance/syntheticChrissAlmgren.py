@@ -11,7 +11,6 @@ DAILY_TRADE_VOL = 5e6                              # Average Daily trading volum
 TRAD_DAYS = 250                                    # Number of trading days in a year
 DAILY_VOLAT = ANNUAL_VOLAT / np.sqrt(TRAD_DAYS)    # Daily volatility in stock price
 
-
 # ----------------------------- Parameters for the Almgren and Chriss Optimal Execution Model ----------------------------- #
 
 TOTAL_SHARES = 1000000                                               # Total number of shares to sell
@@ -34,7 +33,10 @@ class MarketEnvironment():
     def __init__(self, randomSeed = 0,
                  lqd_time = LIQUIDATION_TIME,
                  num_tr = NUM_N,
-                 lambd = LLAMBDA):
+                 lambd = LLAMBDA,
+                 mu = 0.0,
+                 alpha: float = 2.0,
+                 leftover_penalty: float = 1e-3):
         
         # Set the random seed
         random.seed(randomSeed)
@@ -43,8 +45,11 @@ class MarketEnvironment():
         self.anv = ANNUAL_VOLAT
         self.basp = BID_ASK_SP
         self.dtv = DAILY_TRADE_VOL
-        self.dpv = DAILY_VOLAT
-        
+        self.sigma = DAILY_VOLAT
+        self.mu = mu
+        self.alpha = alpha
+        self.leftover_penalty = leftover_penalty
+
         # Initialize the Almgren-Chriss parameters so we can access them later
         self.total_shares = TOTAL_SHARES
         self.startingPrice = STARTING_PRICE
@@ -101,7 +106,8 @@ class MarketEnvironment():
         
         # Set the initial previous price to the starting price
         self.prevPrice = self.startingPrice
-        
+        self.P0 = self.prevPrice
+
         # Set the initial square of the shares to sell to zero
         self.totalSSSQ = 0
         
@@ -137,10 +143,17 @@ class MarketEnvironment():
         # We don't add noise before the first trade    
         if self.k == 0:
             info.price = self.prevImpactedPrice
-        else:
+        else :
             # Calculate the current stock price using arithmetic brownian motion
-            info.price = self.prevImpactedPrice + np.sqrt(self.singleStepVariance * self.tau) * random.normalvariate(0, 1)
-      
+            # info.price = self.prevImpactedPrice + np.sqrt(self.singleStepVariance * self.tau) * random.normalvariate(0, 1)
+
+            # GBM implementation
+            z = random.normalvariate(0.0, 1.0)
+            drift  = (self.mu - 0.5 * self.sigma ** 2) * self.tau
+            shock  = self.sigma * np.sqrt(self.tau) * z
+            info.price = self.prevImpactedPrice * np.exp(drift + shock)
+            self.singleStepVariance = (self.sigma * info.price) ** 2
+
         # If we are transacting, the stock price is affected by the number of shares we sell. The price evolves 
         # according to the Almgren and Chriss price dynamics model. 
         if self.transacting:
@@ -165,6 +178,8 @@ class MarketEnvironment():
                 
             # Apply the temporary impact on the current stock price    
             info.exec_price = info.price - info.currentTemporaryImpact
+            best_limit_price = info.price - (self.basp / 2)         # mid‑spread assumption
+            info.trade_through = (info.exec_price < best_limit_price)
             
             # Calculate the current total capture
             self.totalCapture += info.share_to_sell_now * info.exec_price
@@ -189,18 +204,47 @@ class MarketEnvironment():
             currentUtility = self.compute_AC_utility(self.shares_remaining)
             reward = (abs(self.prevUtility) - abs(currentUtility)) / abs(self.prevUtility)
             self.prevUtility = currentUtility
-            
+
+            # ---------------------------------------------------------------------------------
+            # # Q_t = shares actually sold this step
+            # Q_t = info.share_to_sell_now
+            # # P_t = average executed price
+            # P_t = info.exec_price
+            # #       since temporaryImpact = ε·sign(Q)+η/τ·Q, one can invert η/τ to get 'levels'
+            # d_t = abs(info.currentTemporaryImpact) / (self.eta / self.tau)
+            # reward = Q_t * (self.P0 - P_t) - self.alpha * d_t
+            # # if you want a hard end‐penalty for leftover shares:
+            # if info.done and self.shares_remaining>0:
+            #     reward -= self.leftover_penalty * self.shares_remaining
+            # # convex block-size penalty
+            # beta = 1e-6
+            # reward -= beta * (Q_t**2)
+            # # per-step inventory cost
+            # delta = 1e-3
+            # reward -= delta * (self.shares_remaining / self.total_shares)
+            # frac = Q_t/self.total_shares
+            # reward -= 1e5 * (np.exp(5*frac) - 1)
+            # ----------------------------------------------------------------------------------
+
+            # Q_t   = info.share_to_sell_now               # γn
+            # r_bar = Q_t * info.exec_price                # cash flow from that step
+            # # normalized reward:
+            # reward = (r_bar - Q_t * self.P0) / self.total_shares
+            # ----------------------------------------------------------------------------------
+
             # If all the shares have been sold calculate E, V, and U, and give a positive reward.
             if self.shares_remaining <= 0:
                 
                 # Calculate the implementation shortfall
                 info.implementation_shortfall  = self.total_shares * self.startingPrice - self.totalCapture
-                   
+
                 # Set the done flag to True. This indicates that we have sold all the shares
                 info.done = True
         else:
             reward = 0.0
-        
+            self.prevPrice = info.price
+            self.prevImpactedPrice = info.price
+
         self.k += 1
             
         # Set the new state
@@ -270,7 +314,7 @@ class MarketEnvironment():
             trade_list[i - 1] = st
         trade_list *= ft
         return trade_list
-     
+
         
     def observation_space_dimension(self):
         # Return the dimension of the state
@@ -286,4 +330,3 @@ class MarketEnvironment():
         # Stop transacting
         self.transacting = False            
             
-           
