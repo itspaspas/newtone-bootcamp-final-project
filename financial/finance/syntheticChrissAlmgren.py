@@ -1,8 +1,8 @@
 import random
 import numpy as np
 import collections
-
-
+import math
+from price_models import abm_price, ar_l_price, gbm_price
 # ------------------------------------------------ Financial Parameters --------------------------------------------------- #
 
 ANNUAL_VOLAT = 0.12                                # Annual volatility in stock price
@@ -36,11 +36,13 @@ class MarketEnvironment():
                  lambd = LLAMBDA,
                  mu = 0.0,
                  alpha: float = 2.0,
-                 leftover_penalty: float = 1e-3):
+                 leftover_penalty: float = 1e-3,
+                 price_model: str = 'abm'):
         
         # Set the random seed
         random.seed(randomSeed)
-        
+        self.price_model = price_model
+
         # Initialize the financial parameters so we can access them later
         self.anv = ANNUAL_VOLAT
         self.basp = BID_ASK_SP
@@ -80,6 +82,16 @@ class MarketEnvironment():
         
         # Set a variable to keep trak of the trade number
         self.k = 0
+
+        self.lagCoeffs = np.array([1.5, -0.9, 0.8, -0.6, 0.5, -0.3])     
+        self.alphas = np.array([1, 0.4, 0.3, 0.2, 0.1, 0.1]) * 30
+        self.a_deque = collections.deque(np.zeros(len(self.alphas)))
+        self.returns_deque = collections.deque(np.zeros(len(self.lagCoeffs)))                
+        self.unaffected_returns_deque = collections.deque(np.zeros(len(self.lagCoeffs)))   
+        self.logReturns = collections.deque(np.zeros(len(self.lagCoeffs)))
+        # Constant multiplier for the action returned by the Actor-Critic Model
+        self.constantSharesToSell = (self.total_shares / self.num_n) * 12
+
         
         
     def reset(self, seed = 0, liquid_time = LIQUIDATION_TIME, num_trades = NUM_N, lamb = LLAMBDA):
@@ -143,16 +155,16 @@ class MarketEnvironment():
         # We don't add noise before the first trade    
         if self.k == 0:
             info.price = self.prevImpactedPrice
-        else :
-            # Calculate the current stock price using arithmetic brownian motion
-            # info.price = self.prevImpactedPrice + np.sqrt(self.singleStepVariance * self.tau) * random.normalvariate(0, 1)
-
-            # GBM implementation
-            z = random.normalvariate(0.0, 1.0)
-            drift  = (self.mu - 0.5 * self.sigma ** 2) * self.tau
-            shock  = self.sigma * np.sqrt(self.tau) * z
-            info.price = self.prevImpactedPrice * np.exp(drift + shock)
-            self.singleStepVariance = (self.sigma * info.price) ** 2
+            self.k += 1
+        else:
+            if self.price_model == 'abm':
+                info.price = abm_price(self.prevImpactedPrice, self.singleStepVariance, self.tau)
+            elif self.price_model == 'ar_l':
+                info.price = ar_l_price(self.prevImpactedPrice, self.alphas,
+                                        self.lagCoeffs, self.a_deque, self.returns_deque)
+            elif self.price_model == 'gbm':
+                info.price = gbm_price (self.prevImpactedPrice, self.mu,
+                                        self.sigma, self.dt, self.returns_deque)
 
         # If we are transacting, the stock price is affected by the number of shares we sell. The price evolves 
         # according to the Almgren and Chriss price dynamics model. 

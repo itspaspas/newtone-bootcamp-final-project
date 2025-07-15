@@ -1,0 +1,214 @@
+% Beamer presentation: Optimal Execution – From Almgren–Chriss to Deep RL
+% Author: <Your Name>
+% Date: \today
+\documentclass[11pt]{beamer}
+
+% --------------------------
+% Beamer setup
+% --------------------------
+\usetheme{Madrid}
+\usecolortheme{seahorse}
+\setbeamertemplate{navigation symbols}{}
+
+% Packages
+\usepackage{amsmath,amsfonts,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{multicol}
+\usepackage{tikz}
+
+% Custom commands
+\newcommand{\todo}[1]{\textcolor{red}{\bf TODO: #1}}
+\newcommand{\code}[1]{\texttt{#1}}
+
+% Title information
+\title[Optimal Execution via RL]{Optimal Execution – From the Almgren--Chriss Model to Deep Reinforcement Learning}
+\author{<Your Name>}
+\institute{<Your Institution>}
+\date{\today}
+
+% ================================================================
+\begin{document}
+	
+	% ----------------------------------------------------------------
+	% Title slide
+	% ----------------------------------------------------------------
+	\begin{frame}[plain]
+		\titlepage
+	\end{frame}
+	
+	% ----------------------------------------------------------------
+	% Agenda
+	% ----------------------------------------------------------------
+	\begin{frame}{Agenda}
+		\tableofcontents
+	\end{frame}
+	
+	% ================================================================
+	\section{Motivation}
+	
+	\begin{frame}{Why Optimal Execution Matters}
+		\begin{itemize}
+			\item Large orders move prices \textit{(market impact)} -- poor scheduling increases costs.
+			\item Execution quality is traditionally measured by Implementation Shortfall (IS) and Expected Shortfall (ES).
+			\item Classic solution: \alert{Almgren--Chriss (AC)} closed-form optimal schedule under specific assumptions.
+			\item But \textbf{market micro-structure is richer}: non-linear impact, stochastic liquidity, fees, etc.
+		\end{itemize}
+	\end{frame}
+	
+	\begin{frame}{Why Move Beyond Almgren--Chriss?}
+		\begin{columns}[T]
+			\column{0.55\textwidth}
+			\textbf{Limitations of AC}
+			\begin{itemize}
+				\item Assumes arithmetic Brownian motion (ABM) or deterministic drift.
+				\item Linear temporary and permanent impact.
+				\item Risk captured only via variance of proceeds.
+				\item Static schedule $\Rightarrow$ cannot react to intra-day price information.
+			\end{itemize}
+			\column{0.45\textwidth}
+			\vspace{-0.3cm}
+			\begin{block}{Opportunity for RL}
+				\begin{itemize}
+					\item Model-free: learn directly from simulated or historical LOB.
+					\item Naturally handles high-dimensional states/actions.
+					\item Can optimise non-linear objectives (e.g.\ \textit{CVaR}).
+				\end{itemize}
+			\end{block}
+		\end{columns}
+	\end{frame}
+	
+	% ================================================================
+	\section{Problem Formulation as an MDP}
+	
+	\begin{frame}{State Design}
+		\textbf{Chosen state $s_k = \big(\underbrace{r_{k-D+1:k}}_{\text{log-returns}}, \underbrace{m_k}_{\text{time left}}, \underbrace{i_k}_{\text{inventory left}}\big)$}
+		\begin{itemize}
+			\item $r_{k-D+1:k}$: window of $D=5$ past log-returns (6 returns $\Rightarrow$ 6 periods) captures recent momentum and volatility.
+			\item $m_k=\tfrac{T-k}{T}$: fraction of horizon remaining provides a natural clock.
+			\item $i_k=\tfrac{Q_k}{Q_0}$: remaining inventory fraction informs risk of holding.
+		\end{itemize}
+		\vspace{0.5em}
+		\textbf{Is $D=5$ optimal?}
+		\begin{itemize}
+			\item Larger $D$ offers richer autocorrelation signals but increases dimension \& sample complexity.
+			\item Smaller $D$ reduces noise resilience.
+			\item \emph{Empirically}, $D \in [3,8]$ showed marginal gains; \alert{tune via validation}.
+		\end{itemize}
+	\end{frame}
+	
+	\begin{frame}{Action Space}
+		\begin{itemize}
+			\item Continuous \code{a\_k} $\in [0,1]$: proportion of \emph{current} inventory to sell at step $k$.
+			\item Transformed to actual shares via $Q_{\mathrm{sell}}=a_k\,Q_{k}$.
+			\item Alternative: \textbf{actions as trading rates} $u_k \in \mathbb{R}_+$.
+		\end{itemize}
+		\todo{Add equations linking agent action to price impact (see Eq.~(15) in \code{syntheticChrissAlmgren.py}).}
+	\end{frame}
+	
+	% ================================================================
+	\section{Reward Engineering}
+	
+	\begin{frame}{Custom Reward Function}
+		\begin{block}{Objective}
+			Minimise \textbf{Expected Shortfall (ES$_\alpha$)} at risk level $\alpha$ while penalising variance.
+		\end{block}
+		\vspace{-0.3cm}
+		\[
+		R = -\mathrm{ES}_{0.95}(\mathrm{P\&L}) - \lambda_1 \sigma^2 - \lambda_2\,\epsilon\,|Q_{\mathrm{sell}}|
+		\]
+		\begin{itemize}
+			\item CVaR surrogate implemented via auxiliary variable $\eta$ (see \code{ddpg_agent.py}).
+			\item Trading fee $\epsilon$ appended to imitate real markets.
+			\item Discount factor $\beta=0.9999$ to emphasise early proceeds.
+		\end{itemize}
+		\vspace{0.5em}
+		\textit{Result:} \todo{Insert comparison table: AC vs DDPG + custom reward.}
+	\end{frame}
+	
+	\begin{frame}{Dense vs Sparse Rewards}
+		\begin{itemize}
+			\item \textbf{Dense}: agent rewarded at each step based on instantaneous proceeds.
+			\item \textbf{Sparse}: zero reward until terminal liquidation.
+		\end{itemize}
+		\pause
+		\textit{Observation}: Dense rewards accelerate convergence; sparse rewards encourage risk-aware behaviour but require longer training.
+		\vspace{0.5em}
+		\todo{Add learning-curve figure here.}
+	\end{frame}
+	
+	% ================================================================
+	\section{Enhanced Market Simulator}
+	
+	\begin{frame}{Price Dynamics – Switching to GBM}
+		\begin{itemize}
+			\item Replaced arithmetic Brownian motion with Geometric Brownian Motion (GBM):
+			\[ dS_t = \mu S_t \mathrm{d}t + \sigma S_t \mathrm{d}W_t. \]
+			\item Adjusted single-step variance in environment (see \code{syntheticChrissAlmgren.py}).
+		\end{itemize}
+		\vspace{0.5em}
+		\textbf{Impact on Policy}
+		\begin{itemize}
+			\item Higher proportional variance $\Rightarrow$ larger tail-risk; CVaR term becomes more binding.
+			\item Learned schedule skews toward \emph{front-loading} when drift $\mu<0$.
+		\end{itemize}
+		\todo{Insert P&L distribution plot (GBM vs ABM).}
+	\end{frame}
+	
+	\begin{frame}{Adding Trading Fees \& Non-linear Impact}
+		\begin{itemize}
+			\item Fixed fee $\epsilon$ already in AC; we add proportional fee $\lambda_2 \times v^2$.
+			\item Encourages smoother execution path.
+		\end{itemize}
+		\todo{Show before/after utility comparison.}
+	\end{frame}
+	
+	% ================================================================
+	\section{Algorithmic Benchmarks}
+	
+	\begin{frame}{DDPG Baseline (Our Implementation)}
+		\begin{itemize}
+			\item Actor–Critic with OU-noise exploration.
+			\item Replay buffer size $10^4$, batch size 128.
+			\item Achieved ES$_{0.95}$: \todo{XX\% improvement over AC.}
+		\end{itemize}
+	\end{frame}
+	
+	\begin{frame}{Space for Further Work}
+		\begin{block}{SAC and TD3 Experiments}
+			\begin{itemize}
+				\item \todo{Insert architecture + hyper-parameters}
+				\item \todo{Insert performance metrics vs DDPG}
+			\end{itemize}
+		\end{block}
+		\vspace{0.5em}
+		Please complete once models are trained and evaluated.
+	\end{frame}
+	
+	% ================================================================
+	\section{Conclusion}
+	
+	\begin{frame}{Key Takeaways}
+		\begin{itemize}
+			\item AC provides analytical insight but is rigid.
+			\item Deep RL absorbs richer signals and objectives, outperforming AC on ES.
+			\item Reward shaping and environment realism (GBM, fees) materially influence learned policy.
+			\item Future: ensemble of SAC/TD3, calibration on LOB simulator (e.g. ABIDES).
+		\end{itemize}
+	\end{frame}
+	
+	% ----------------------------------------------------------------
+	\begin{frame}[allowframebreaks]{References}
+		\tiny
+		\bibliographystyle{abbrv}
+		\begin{thebibliography}{9}
+			\bibitem{AC2001} R. Almgren and N. Chriss. \emph{Optimal Execution of Portfolio Transactions}. 2001.
+			\bibitem{Gatheral2012} J. Gatheral and A. Schied. \emph{Optimal Trade Execution under GBM}. 2012.
+			\bibitem{Cheridito2025} P. Cheridito and M. Weiss. \emph{Reinforcement Learning for Trade Execution with Market Impact}. arXiv:2507.06345, 2025.
+			\bibitem{Hafsi2024} Y. Hafsi and E. Vittori. \emph{Optimal Execution with Reinforcement Learning}. arXiv:2411.06389, 2024.
+		\end{thebibliography}
+	\end{frame}
+	
+	% ================================================================
+\end{document}
