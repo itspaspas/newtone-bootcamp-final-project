@@ -3,6 +3,7 @@ import numpy as np
 import collections
 import math
 import price_models as pm
+from rewards import RewardFunction
 # ------------------------------------------------ Financial Parameters --------------------------------------------------- #
 
 ANNUAL_VOLAT = 0.12                                # Annual volatility in stock price
@@ -22,7 +23,7 @@ EPSILON = BID_ASK_SP / 2                                             # Fixed Cos
 SINGLE_STEP_VARIANCE = (DAILY_VOLAT  * STARTING_PRICE) ** 2          # Calculate single step variance
 ETA = BID_ASK_SP / (0.01 * DAILY_TRADE_VOL)                          # Price Impact for Each 1% of Daily Volume Traded
 GAMMA = BID_ASK_SP / (0.1 * DAILY_TRADE_VOL)                         # Permanent Impact Constant
-COMMISSION = 0.25                                                    # per share commission
+# COMMISSION_RATE = 0.01
 # ----------------------------------------------------------------------------------------------------------------------- #
 
 
@@ -37,11 +38,13 @@ class MarketEnvironment():
                  mu = 0.0,
                  alpha: float = 2.0,
                  leftover_penalty: float = 1e-3,
+                 reward_function: RewardFunction = None,
                  price_model: str = 'gbm'):
         
         # Set the random seed
         random.seed(randomSeed)
         self.price_model = price_model
+        self.reward_function = reward_function
 
         # Initialize the financial parameters so we can access them later
         self.anv = ANNUAL_VOLAT
@@ -99,11 +102,15 @@ class MarketEnvironment():
     def reset(self, seed = 0, liquid_time = LIQUIDATION_TIME, num_trades = NUM_N, lamb = LLAMBDA):
         
         # Initialize the environment with the given parameters
-        self.__init__(randomSeed = seed, lqd_time = liquid_time, num_tr = num_trades, lambd = lamb)
+        self.__init__(randomSeed = seed, lqd_time = liquid_time, num_tr = num_trades, lambd = lamb,reward_function=self.reward_function)
         
         # Set the initial state to [0,0,0,0,0,0,1,1]
         self.initial_state = np.array(list(self.logReturns) + [self.timeHorizon / self.num_n, \
                                                                self.shares_remaining / self.total_shares])
+        if self.reward_function is not None:
+            init_state = self.initial_state.reshape(1, -1)
+            self.reward_function.reset(init_state)
+
         return self.initial_state
 
     
@@ -141,7 +148,13 @@ class MarketEnvironment():
         
         # Set the done flag to False. This indicates that we haven't sold all the shares yet.
         info.done = False
-                
+        
+        current_state = np.array(
+            list(self.logReturns) +
+            [self.timeHorizon / self.num_n,
+            self.shares_remaining / self.total_shares]
+        )
+
         # During training, if the DDPG fails to sell all the stocks before the given 
         # number of trades or if the total number shares remaining is less than 1, then stop transacting,
         # set the done Flag to True, return the current implementation shortfall, and give a negative reward.
@@ -220,9 +233,9 @@ class MarketEnvironment():
             self.prevImpactedPrice = info.price - info.currentPermanentImpact
             
             # Calculate the reward
-            currentUtility = self.compute_AC_utility(self.shares_remaining)
-            reward = (abs(self.prevUtility) - abs(currentUtility)) / abs(self.prevUtility)
-            self.prevUtility = currentUtility
+            # currentUtility = self.compute_AC_utility(self.shares_remaining)
+            # reward = (abs(self.prevUtility) - abs(currentUtility)) / abs(self.prevUtility)
+            # self.prevUtility = currentUtility
 
             # ---------------------------------------------------------------------------------
             # # Q_t = shares actually sold this step
@@ -245,12 +258,24 @@ class MarketEnvironment():
             # reward -= 1e5 * (np.exp(5*frac) - 1)
             # ----------------------------------------------------------------------------------
 
-            Q_t   = info.share_to_sell_now 
-            r_bar = Q_t * info.exec_price 
-            # normalized reward:
-            reward = (r_bar - Q_t * self.P0) / self.total_shares
+            # Q_t   = info.share_to_sell_now 
+            # r_bar = Q_t * info.exec_price 
+            # # normalized reward:
+            # reward = (r_bar - Q_t * self.P0) / self.total_shares
             # ----------------------------------------------------------------------------------
 
+            if self.reward_function is not None:
+                next_state = np.array(
+                    list(self.logReturns) +
+                    [self.timeHorizon / self.num_n,
+                    self.shares_remaining / self.total_shares]
+                )
+                curr   = current_state.reshape(1, -1)
+                act    = np.array([action]).reshape(1, -1)
+                nxt    = next_state.reshape(1, -1)
+                reward = float(self.reward_function.calculate(
+                    curr, act, nxt, info.done
+                ))
             # If all the shares have been sold calculate E, V, and U, and give a positive reward.
             if self.shares_remaining <= 0:
                 
@@ -269,7 +294,6 @@ class MarketEnvironment():
 
         return (state, np.array([reward]), info.done, info)
 
-   
     def permanentImpact(self, sharesToSell):
         # Calculate the permanent impact according to equations (6) and (1) of the AC paper
         pi = self.gamma * sharesToSell
@@ -278,7 +302,8 @@ class MarketEnvironment():
     
     def temporaryImpact(self, sharesToSell):
         # Calculate the temporary impact according to equation (7) of the AC paper
-        ti = (self.epsilon * np.sign(sharesToSell)) + ((self.eta / self.tau) * sharesToSell) + COMMISSION * np.sign(sharesToSell)
+        ti = (self.epsilon * np.sign(sharesToSell)) + ((self.eta / self.tau) * sharesToSell) \
+            # + COMMISSION_RATE * sharesToSell * np.sign(sharesToSell)
         return ti
     
     def get_expected_shortfall(self, sharesToSell):
