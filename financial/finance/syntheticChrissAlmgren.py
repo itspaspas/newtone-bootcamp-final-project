@@ -37,7 +37,7 @@ class MarketEnvironment():
                  mu = 0.0,
                  alpha: float = 2.0,
                  leftover_penalty: float = 1e-3,
-                 price_model: str = 'ar_l'):
+                 price_model: str = 'gbm'):
         
         # Set the random seed
         random.seed(randomSeed)
@@ -70,7 +70,6 @@ class MarketEnvironment():
         self.kappa = np.arccosh((((self.kappa_hat ** 2) * (self.tau ** 2)) / 2) + 1) / self.tau
         self.sigma = ANNUAL_VOLAT
         self.dt = self.tau / TRAD_DAYS
-
 
         # Set the variables for the initial state
         self.shares_remaining = self.total_shares
@@ -166,8 +165,13 @@ class MarketEnvironment():
                 info.price = pm.ar_l_price(self.prevImpactedPrice, self.alphas,
                                         self.lagCoeffs, self.a_deque, self.returns_deque)
             elif self.price_model == 'gbm':
-                info.price = pm.gbm_price (self.prevImpactedPrice, self.mu,
-                                        self.sigma, self.dt, self.returns_deque)
+                info.price = pm.gbm_price(
+                    prev_price=self.prevImpactedPrice,
+                    dt=self.dt,
+                    sigma=self.sigma,
+                    mu=self.mu
+                )
+                self.prevImpactedPrice = info.price
 
         # If we are transacting, the stock price is affected by the number of shares we sell. The price evolves 
         # according to the Almgren and Chriss price dynamics model. 

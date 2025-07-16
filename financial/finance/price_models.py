@@ -2,7 +2,7 @@ import numpy as np
 import math
 import random
 import collections
-
+from typing import Deque
 
 def abm_price(prev_price: float, single_step_variance: float, tau: float) -> float:
     return prev_price + np.sqrt(single_step_variance * tau) * random.normalvariate(0, 1)
@@ -31,15 +31,16 @@ def ar_l_price(prev_impacted_price: float,
     return prev_impacted_price * np.exp(0.0001 * new_return)
 
 
-def gbm_price(prev_impacted_price: float,
-              mu: float,
-              sigma: float,
+import numpy as np
+
+def gbm_price(prev_price: float,
               dt: float,
-              returns_deque: collections.deque) -> float:
-    z = random.normalvariate(0, 1)
-    log_return = (mu - 0.5 * sigma**2) * dt + sigma * math.sqrt(dt) * z
-    returns_deque.append(log_return)
-    returns_deque.popleft()
-    return prev_impacted_price * np.exp(log_return)
+              sigma: float,
+              mu: float
+             ) -> float:
+    dw = np.random.normal(loc=0.0, scale=np.sqrt(dt) * sigma)
 
+    drift = (mu - 0.5 * sigma**2) * dt
+    log_ret = drift + dw
 
+    return prev_price * np.exp(log_ret)
