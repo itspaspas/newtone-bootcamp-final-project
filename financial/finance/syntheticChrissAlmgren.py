@@ -2,7 +2,7 @@ import random
 import numpy as np
 import collections
 import math
-from price_models import abm_price, ar_l_price, gbm_price
+import price_models as pm
 # ------------------------------------------------ Financial Parameters --------------------------------------------------- #
 
 ANNUAL_VOLAT = 0.12                                # Annual volatility in stock price
@@ -22,7 +22,7 @@ EPSILON = BID_ASK_SP / 2                                             # Fixed Cos
 SINGLE_STEP_VARIANCE = (DAILY_VOLAT  * STARTING_PRICE) ** 2          # Calculate single step variance
 ETA = BID_ASK_SP / (0.01 * DAILY_TRADE_VOL)                          # Price Impact for Each 1% of Daily Volume Traded
 GAMMA = BID_ASK_SP / (0.1 * DAILY_TRADE_VOL)                         # Permanent Impact Constant
-
+COMMISSION = 0.25                                                    # per share commission
 # ----------------------------------------------------------------------------------------------------------------------- #
 
 
@@ -37,7 +37,7 @@ class MarketEnvironment():
                  mu = 0.0,
                  alpha: float = 2.0,
                  leftover_penalty: float = 1e-3,
-                 price_model: str = 'abm'):
+                 price_model: str = 'ar_l'):
         
         # Set the random seed
         random.seed(randomSeed)
@@ -68,6 +68,9 @@ class MarketEnvironment():
         self.eta_hat = self.eta - (0.5 * self.gamma * self.tau)
         self.kappa_hat = np.sqrt((self.llambda * self.singleStepVariance) / self.eta_hat)
         self.kappa = np.arccosh((((self.kappa_hat ** 2) * (self.tau ** 2)) / 2) + 1) / self.tau
+        self.sigma = ANNUAL_VOLAT
+        self.dt = self.tau / TRAD_DAYS
+
 
         # Set the variables for the initial state
         self.shares_remaining = self.total_shares
@@ -158,12 +161,12 @@ class MarketEnvironment():
             self.k += 1
         else:
             if self.price_model == 'abm':
-                info.price = abm_price(self.prevImpactedPrice, self.singleStepVariance, self.tau)
+                info.price = pm.abm_price(self.prevImpactedPrice, self.singleStepVariance, self.tau)
             elif self.price_model == 'ar_l':
-                info.price = ar_l_price(self.prevImpactedPrice, self.alphas,
+                info.price = pm.ar_l_price(self.prevImpactedPrice, self.alphas,
                                         self.lagCoeffs, self.a_deque, self.returns_deque)
             elif self.price_model == 'gbm':
-                info.price = gbm_price (self.prevImpactedPrice, self.mu,
+                info.price = pm.gbm_price (self.prevImpactedPrice, self.mu,
                                         self.sigma, self.dt, self.returns_deque)
 
         # If we are transacting, the stock price is affected by the number of shares we sell. The price evolves 
@@ -175,8 +178,8 @@ class MarketEnvironment():
                 action = action.item()            
 
             # Convert the action to the number of shares to sell in the current step
-            sharesToSellNow = self.shares_remaining * action
-#             sharesToSellNow = min(self.shares_remaining * action, self.shares_remaining)
+            # sharesToSellNow = self.shares_remaining * action
+            sharesToSellNow = min(self.constantSharesToSell * action, self.shares_remaining)
     
             if self.timeHorizon < 2:
                 sharesToSellNow = self.shares_remaining
@@ -238,10 +241,10 @@ class MarketEnvironment():
             # reward -= 1e5 * (np.exp(5*frac) - 1)
             # ----------------------------------------------------------------------------------
 
-            # Q_t   = info.share_to_sell_now               # γn
-            # r_bar = Q_t * info.exec_price                # cash flow from that step
-            # # normalized reward:
-            # reward = (r_bar - Q_t * self.P0) / self.total_shares
+            Q_t   = info.share_to_sell_now 
+            r_bar = Q_t * info.exec_price 
+            # normalized reward:
+            reward = (r_bar - Q_t * self.P0) / self.total_shares
             # ----------------------------------------------------------------------------------
 
             # If all the shares have been sold calculate E, V, and U, and give a positive reward.
@@ -254,8 +257,6 @@ class MarketEnvironment():
                 info.done = True
         else:
             reward = 0.0
-            self.prevPrice = info.price
-            self.prevImpactedPrice = info.price
 
         self.k += 1
             
@@ -273,7 +274,7 @@ class MarketEnvironment():
     
     def temporaryImpact(self, sharesToSell):
         # Calculate the temporary impact according to equation (7) of the AC paper
-        ti = (self.epsilon * np.sign(sharesToSell)) + ((self.eta / self.tau) * sharesToSell)
+        ti = (self.epsilon * np.sign(sharesToSell)) + ((self.eta / self.tau) * sharesToSell) + COMMISSION * np.sign(sharesToSell)
         return ti
     
     def get_expected_shortfall(self, sharesToSell):
