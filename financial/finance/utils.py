@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
-
+import random
 import syntheticChrissAlmgren as sca
 
 from statsmodels.iolib.table import SimpleTable
@@ -120,7 +120,6 @@ def plot_price_model(seed = 0, num_days = 1000):
     plt.ylabel('Stock Price')
     plt.xlabel('days')
     plt.show()
-    
 
     
 def get_optimal_vals(lq_time = 60, nm_trades = 60, tr_risk = 1e-6, title = ''):
