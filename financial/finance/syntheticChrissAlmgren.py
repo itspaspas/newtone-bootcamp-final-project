@@ -37,7 +37,8 @@ class MarketEnvironment():
                  mu = 0.0,
                  alpha: float = 2.0,
                  leftover_penalty: float = 1e-3,
-                 price_model: str = 'ar_l'):
+                 price_model: str = 'ar_l',
+                 use_custom_reward=False):
         
         # Set the random seed
         random.seed(randomSeed)
@@ -48,6 +49,7 @@ class MarketEnvironment():
         self.basp = BID_ASK_SP
         self.dtv = DAILY_TRADE_VOL
         self.sigma = DAILY_VOLAT
+        self.dpv = DAILY_VOLAT
         self.mu = mu
         self.alpha = alpha
         self.leftover_penalty = leftover_penalty
@@ -134,7 +136,7 @@ class MarketEnvironment():
         self.prevUtility = self.compute_AC_utility(self.total_shares)
         
 
-    def step(self, action):
+    def step(self, action,action_type):
         
         # Create a class that will be used to keep track of information about the transaction
         class Info(object):
@@ -178,10 +180,37 @@ class MarketEnvironment():
             if isinstance(action, np.ndarray):
                 action = action.item()            
 
-            # Convert the action to the number of shares to sell in the current step
-            # sharesToSellNow = self.shares_remaining * action
-            sharesToSellNow = min(self.constantSharesToSell * action, self.shares_remaining)
-    
+            # --- ACTION STRATEGY SELECTION ---
+            if action_type == "baseline":
+                sharesToSellNow = min(self.constantSharesToSell * action, self.shares_remaining)
+
+            elif action_type == "spread":
+                spread_factor = self.basp / self.prevPrice 
+                price_momentum = self.logReturns[-1] 
+                adjustment = 1 + (spread_factor * price_momentum)
+                sharesToSellNow = self.shares_remaining * action * adjustment
+
+            elif action_type == "volatility":
+                recent_volatility = np.std(list(self.logReturns))
+                vol_adjustment = recent_volatility / self.dpv 
+                sharesToSellNow = self.shares_remaining * action * vol_adjustment
+
+            elif action_type == "time":
+                time_factor = self.timeHorizon / self.num_n
+                sharesToSellNow = self.shares_remaining * action * time_factor
+
+            elif action_type == "volume":
+                max_daily_participation = 0.01
+                sharesToSellNow = self.dtv * max_daily_participation * action 
+                sharesToSellNow = min(sharesToSellNow, self.shares_remaining)
+
+            elif action_type == "percent":
+                sharesToSellNow = min(self.total_shares * action, self.shares_remaining)
+
+            elif action_type == "rate":
+                trading_rate = action
+                sharesToSellNow = self.shares_remaining * trading_rate / max(self.timeHorizon, 1)
+        
             if self.timeHorizon < 2:
                 sharesToSellNow = self.shares_remaining
 
