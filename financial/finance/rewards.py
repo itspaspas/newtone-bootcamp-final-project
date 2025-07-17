@@ -2,7 +2,6 @@ CASH_INDEX = 0
 INVENTORY_INDEX = 1
 TIME_INDEX = 2
 ASSET_PRICE_INDEX = 3
-
 BID_INDEX = 0
 ASK_INDEX = 1
 
@@ -142,7 +141,6 @@ class RunningInventoryPenalty(RewardFunction):
 
 CjCriterion = RunningInventoryPenalty
 
-
 class ExponentialUtility(RewardFunction):
     def __init__(self, risk_aversion: float = 0.1):
         self.risk_aversion = risk_aversion
@@ -161,3 +159,127 @@ class ExponentialUtility(RewardFunction):
 
     def reset(self, initial_state: np.ndarray):
         pass
+
+class NormalizedExecutionReward(RewardFunction):
+    def __init__(self, total_shares: float, P0: float, price_index: int = 0):
+        self.total_shares = float(total_shares)
+        self.P0 = float(P0)
+        self.price_index = price_index
+
+    def calculate(
+        self,
+        current_state: np.ndarray,
+        action: np.ndarray,
+        next_state: np.ndarray,
+        is_terminal_step: bool = False,
+    ) -> float:
+        flat_state = np.asarray(next_state).ravel()
+
+        Q_t = float(action[0])
+        exec_price = float(flat_state[self.price_index])
+
+        r_bar = Q_t * exec_price
+
+        return (r_bar - Q_t * self.P0) / self.total_shares
+
+    def reset(self, initial_state: np.ndarray):
+        # Stateless
+        pass
+
+class ExecutionShortfallWithPenaltiesReward(RewardFunction):
+    def __init__(
+        self,
+        P0: float,
+        alpha: float,
+        eta: float,
+        tau: float,
+        leftover_penalty: float,
+        total_shares: float,
+        *,
+        price_index: int = 0,
+        shares_index: int = 1,
+        temp_impact_index: int = 2,
+    ):
+        self.P0 = float(P0)
+        self.alpha = float(alpha)
+        self.eta = float(eta)
+        self.tau = float(tau)
+        self.leftover_penalty = float(leftover_penalty)
+        self.total_shares = float(total_shares)
+
+        self.price_index = price_index
+        self.shares_index = shares_index
+        self.temp_impact_index = temp_impact_index
+
+        self._beta = 1e-6
+        self._delta = 1e-3
+
+    def calculate(
+        self,
+        current_state: np.ndarray,
+        action: np.ndarray,
+        next_state: np.ndarray,
+        is_terminal_step: bool = False,
+    ) -> float:
+        flat_state = np.asarray(next_state).ravel()
+
+        Q_t = float(action[0])
+
+        P_t = float(flat_state[self.price_index])
+        shares_remaining = float(flat_state[self.shares_index])
+        current_temp_impact = float(flat_state[self.temp_impact_index])
+
+        reward = Q_t * (self.P0 - P_t)
+
+        d_t = abs(current_temp_impact) / (self.eta / self.tau)
+        reward -= self.alpha * d_t
+
+        if is_terminal_step and shares_remaining > 0:
+            reward -= self.leftover_penalty * shares_remaining
+
+        reward -= self._beta * (Q_t ** 2)
+        reward -= self._delta * (shares_remaining / self.total_shares)
+
+        frac = Q_t / self.total_shares
+        reward -= 1e5 * (np.exp(5.0 * frac) - 1.0)
+
+        return reward
+
+    def reset(self, initial_state: np.ndarray):
+        # Stateless
+        pass
+
+class ACUtilityReward(RewardFunction):
+    def __init__(self):
+        self.prevUtility: float = None
+        self.env = None
+
+    def reset(self, initial_state: np.ndarray):
+        self.prevUtility = self.env.compute_AC_utility(self.env.total_shares)
+
+    def calculate(
+    self,
+    current_state: np.ndarray,
+    action: np.ndarray,
+    next_state: np.ndarray,
+    is_terminal_step: bool = False
+    ) -> float:
+        frac = float(next_state[0, -1])
+        shares_rem = frac * self.env.total_shares
+        currentUtility = self.env.compute_AC_utility(shares_rem)
+        reward = 0.0
+        if self.prevUtility not in (None, 0.0):
+            reward = (abs(self.prevUtility) - abs(currentUtility)) / abs(self.prevUtility)
+        self.prevUtility = currentUtility
+        return reward
+
+class TerminalOnlyReward(RewardFunction):
+    def __init__(self, base_reward: RewardFunction):
+        self.base = CjOeCriterion
+
+    def reset(self, initial_state):
+        self.base.reset(initial_state)
+
+    def calculate(self, curr, act, nxt, is_terminal_step=False):
+        r = self.base.calculate(curr, act, nxt, is_terminal_step)
+        return r if is_terminal_step else 0.0

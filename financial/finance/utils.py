@@ -2,9 +2,14 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
-import random
 import syntheticChrissAlmgren as sca
-
+from collections import deque
+import importlib
+import price_models
+from td3_agent import TD3
+from sac_agent import SACAgent
+from ddpg_agent import Agent as DDPGAgent
+import rewards as rw
 from statsmodels.iolib.table import SimpleTable
 from itertools import zip_longest
 from statsmodels.iolib.tableformatting import fmt_2cols
@@ -470,3 +475,142 @@ def get_av_std(lq_time = 60, nm_trades = 60, tr_risk = 1e-6, trs = 100):
     ax.yaxis.set_major_formatter(yNumFmt)
     plt.legend()
     plt.show
+
+class ScoreTracker:
+    def __init__(self):
+        self.scores = []
+
+    def add(self, score: float):
+        self.scores.append(score)
+
+    def reset(self):
+        self.scores = []
+
+    def get_all(self):
+        return self.scores
+
+class ActionTracker:
+    def __init__(self):
+        self.actions = []
+
+    def add(self, action):
+        self.actions.append(action)
+
+    def reset(self):
+        self.actions = []
+
+    def get_all(self):
+        return self.actions
+
+
+def plot_rewards(rewards, steps=None, title="Reward vs. Step"):
+    if steps is None:
+        steps = range(len(rewards))
+
+    plt.figure()
+    plt.plot(steps, rewards)
+    plt.xlabel("Step")
+    plt.ylabel("Reward")
+    plt.title(title)
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+def reload_all():
+    importlib.reload(price_models)
+    importlib.reload(sca)
+    importlib.reload(rw)
+
+def plot_rewards(rewards, steps=None, title="Reward vs. Step", save_path=None):
+    """
+    Plot a 1D sequence over time (steps), and optionally save it to disk.
+
+    Args:
+        rewards   (list or np.ndarray): sequence of values.
+        steps     (list or np.ndarray, optional): x‑axis values. Defaults to 0..len(rewards)-1.
+        title     (str): plot title.
+        save_path (str, optional): if given, file path to save the figure (png).
+    """
+    if steps is None:
+        steps = range(len(rewards))
+
+    plt.figure()
+    plt.plot(steps, rewards)           # default line style and color
+    plt.xlabel("Step")
+    plt.ylabel("Reward")
+    plt.title(title)
+    plt.grid(True)
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=200)
+        plt.close()
+    else:
+        plt.show()
+
+def run_training(agent_type, reward_name, reward_fn,
+                 episodes=5000, lqt=60, n_trades=60, risk_aversion=1e-6):
+    reload_all()
+    env = sca.MarketEnvironment(reward_function=reward_fn)
+    if agent_type == 'TD3':
+        agent = TD3(state_size=env.observation_space_dimension(),
+                    action_size=env.action_space_dimension(),
+                    random_seed=0)
+    elif agent_type == 'DDPG':
+        agent = DDPGAgent(state_size=env.observation_space_dimension(),
+                          action_size=env.action_space_dimension(),
+                          random_seed=0)
+    elif agent_type == 'SAC':
+        agent = SACAgent(state_size=env.observation_space_dimension(),
+                         action_size=env.action_space_dimension(),
+                         random_seed=0)
+
+    shortfall_hist = np.zeros(episodes)
+    shortfall_deque = deque(maxlen=100)
+    reward_tracker = []
+    action_tracker = ActionTracker()
+
+    for ep in range(episodes):
+        state = env.reset(seed=ep,
+                          liquid_time=lqt,
+                          num_trades=n_trades,
+                          lamb=risk_aversion)
+        env.start_transactions()
+
+        step_rewards = []
+        action_tracker.reset()
+
+        for t in range(n_trades + 1):
+            raw_action = agent.act(state, add_noise=True)
+            next_state, reward, done, info = env.step(raw_action)
+
+            step_rewards.append(float(reward))
+            action_tracker.add(float(raw_action))
+
+            agent.step(state, raw_action, reward, next_state, done)
+            state = next_state
+
+            if done:
+                shortfall_hist[ep] = info.implementation_shortfall
+                shortfall_deque.append(info.implementation_shortfall)
+                break
+
+        reward_tracker.extend(step_rewards)
+
+        if (ep + 1) % 100 == 0:
+            avg_sf = np.mean(shortfall_deque)
+            print(f"Agent: {agent_type}, Reward: {reward_name} | "
+                  f"Ep {ep+1}/{episodes} | Avg Shortfall (last 100): ${avg_sf:,.2f}")
+
+    overall_avg_sf = np.mean(shortfall_hist)
+    print(f"Finished: {agent_type} + {reward_name} | "
+          f"Overall Avg Shortfall: ${overall_avg_sf:,.2f}\n")
+
+    cum_rewards = np.cumsum(np.array(reward_tracker))
+    plot_rewards(
+        cum_rewards,
+        title=f"Cumulative Reward over Steps ({agent_type} + {reward_name})"
+    )
+
+    all_actions = action_tracker.get_all()
+    plot_rewards(all_actions, title=f"Actions over Steps ({agent_type} + {reward_name})")

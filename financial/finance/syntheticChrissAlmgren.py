@@ -4,6 +4,8 @@ import collections
 import math
 import price_models as pm
 from rewards import RewardFunction
+from actions import action_registry, ActionStrategy
+
 # ------------------------------------------------ Financial Parameters --------------------------------------------------- #
 
 ANNUAL_VOLAT = 0.12                                # Annual volatility in stock price
@@ -23,7 +25,6 @@ EPSILON = BID_ASK_SP / 2                                             # Fixed Cos
 SINGLE_STEP_VARIANCE = (DAILY_VOLAT  * STARTING_PRICE) ** 2          # Calculate single step variance
 ETA = BID_ASK_SP / (0.01 * DAILY_TRADE_VOL)                          # Price Impact for Each 1% of Daily Volume Traded
 GAMMA = BID_ASK_SP / (0.1 * DAILY_TRADE_VOL)                         # Permanent Impact Constant
-# COMMISSION_RATE = 0.01
 # ----------------------------------------------------------------------------------------------------------------------- #
 
 
@@ -39,12 +40,14 @@ class MarketEnvironment():
                  alpha: float = 2.0,
                  leftover_penalty: float = 1e-3,
                  reward_function: RewardFunction = None,
-                 price_model: str = 'gbm'):
+                 price_model: str = 'gbm',
+                 action_type: str = 'baseline'):
         
         # Set the random seed
         random.seed(randomSeed)
         self.price_model = price_model
         self.reward_function = reward_function
+        self.action_strategy: ActionStrategy = action_registry[action_type]
 
         # Initialize the financial parameters so we can access them later
         self.anv = ANNUAL_VOLAT
@@ -102,7 +105,12 @@ class MarketEnvironment():
     def reset(self, seed = 0, liquid_time = LIQUIDATION_TIME, num_trades = NUM_N, lamb = LLAMBDA):
         
         # Initialize the environment with the given parameters
-        self.__init__(randomSeed = seed, lqd_time = liquid_time, num_tr = num_trades, lambd = lamb,reward_function=self.reward_function)
+        self.__init__(randomSeed = seed, 
+                      lqd_time = liquid_time, 
+                      num_tr = num_trades, 
+                      lambd = lamb,
+                      reward_function=self.reward_function,
+                      action_type=self.action_strategy.__class__.__name__.replace('Action','').lower())
         
         # Set the initial state to [0,0,0,0,0,0,1,1]
         self.initial_state = np.array(list(self.logReturns) + [self.timeHorizon / self.num_n, \
@@ -195,14 +203,13 @@ class MarketEnvironment():
                 action = action.item()            
 
             # Convert the action to the number of shares to sell in the current step
-            # sharesToSellNow = self.shares_remaining * action
-            sharesToSellNow = min(self.constantSharesToSell * action, self.shares_remaining)
-    
+            raw_shares = self.action_strategy.compute(self, action)
+
             if self.timeHorizon < 2:
-                sharesToSellNow = self.shares_remaining
+                raw_shares = self.shares_remaining
 
             # Since we are not selling fractions of shares, round up the total number of shares to sell to the nearest integer. 
-            info.share_to_sell_now = np.around(sharesToSellNow)
+            info.share_to_sell_now = np.around(raw_shares)
 
             # Calculate the permanent and temporary impact on the stock price according the AC price dynamics model
             info.currentPermanentImpact = self.permanentImpact(info.share_to_sell_now)
@@ -236,33 +243,6 @@ class MarketEnvironment():
             # currentUtility = self.compute_AC_utility(self.shares_remaining)
             # reward = (abs(self.prevUtility) - abs(currentUtility)) / abs(self.prevUtility)
             # self.prevUtility = currentUtility
-
-            # ---------------------------------------------------------------------------------
-            # # Q_t = shares actually sold this step
-            # Q_t = info.share_to_sell_now
-            # # P_t = average executed price
-            # P_t = info.exec_price
-            # #       since temporaryImpact = ε·sign(Q)+η/τ·Q, one can invert η/τ to get 'levels'
-            # d_t = abs(info.currentTemporaryImpact) / (self.eta / self.tau)
-            # reward = Q_t * (self.P0 - P_t) - self.alpha * d_t
-            # # if you want a hard end‐penalty for leftover shares:
-            # if info.done and self.shares_remaining>0:
-            #     reward -= self.leftover_penalty * self.shares_remaining
-            # # convex block-size penalty
-            # beta = 1e-6
-            # reward -= beta * (Q_t**2)
-            # # per-step inventory cost
-            # delta = 1e-3
-            # reward -= delta * (self.shares_remaining / self.total_shares)
-            # frac = Q_t/self.total_shares
-            # reward -= 1e5 * (np.exp(5*frac) - 1)
-            # ----------------------------------------------------------------------------------
-
-            # Q_t   = info.share_to_sell_now 
-            # r_bar = Q_t * info.exec_price 
-            # # normalized reward:
-            # reward = (r_bar - Q_t * self.P0) / self.total_shares
-            # ----------------------------------------------------------------------------------
 
             if self.reward_function is not None:
                 next_state = np.array(

@@ -1,4 +1,3 @@
-# imports
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -94,7 +93,7 @@ class TD3():
                 self.noise = OUNoise(action_size, random_seed)
                 self.noise_decay = NOISE_DECAY
                 
-                self.memory = ReplayBuffer(action_size, BUFFER_SIZE, BATCH_SIZE, random_seed, device)
+                self.memory = ReplayBuffer(action_size, BUFFER_SIZE, BATCH_SIZE, random_seed)
                 
 
 
@@ -140,7 +139,7 @@ class TD3():
         next_action = (self.actor_target(next_states) + noise).clamp(-1, 1)
 
         target_Q1, target_Q2 = self.critic_target(next_states, next_action)
-        target_Q = torch.min(target_Q1, target_Q2)
+        target_Q = torch.minimum(target_Q1, target_Q2)
         target_Q = rewards + (gamma * target_Q * (1-dones)).detach()
 
         current_Q1, current_Q2 = self.critic_local(states, actions)
